@@ -46,7 +46,7 @@ func (p Plugin) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.Msg) 
 
 	rname, t, err := p.lookup(ctx, qname, zone)
 	if err != nil {
-		return dns.RcodeServerFailure, errors.Wrap(err, "unable to lookup name on etcd")
+		return plugin.NextOrFailure(p.Name(), p.Next, ctx, w, r)
 	}
 
 	switch t {
