@@ -88,6 +88,18 @@ func (p Plugin) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.Msg) 
 				A: net.ParseIP(rrname).To4(),
 			},
 		}
+	case dns.Type(dns.TypeTXT):
+		m.Answer = []dns.RR{
+			&dns.TXT{
+				Hdr: dns.RR_Header{
+					Name:   qname,
+					Ttl:    ttl,
+					Class:  dns.ClassINET,
+					Rrtype: dns.TypeTXT,
+				},
+				Txt: []string{rname},
+			},
+		}
 	default:
 		return dns.RcodeNotImplemented, fmt.Errorf("unsupported query type: %v", req.QType())
 	}
@@ -132,7 +144,7 @@ func (p Plugin) lookup(ctx context.Context, qname, zone string) (string, dns.Typ
 	k := string(res.Kvs[0].Key)
 	v := string(res.Kvs[0].Value)
 	tp := strings.TrimPrefix(k, name)
-	log.Infof("%s (@ %s): %s: %v (%s [%s])", qname, name, v, k, tp)
+	log.Infof("%s (@ %s), key %s: %v (type %s)", qname, name, k, v, tp)
 
 	switch tp {
 	case "A":
@@ -140,6 +152,11 @@ func (p Plugin) lookup(ctx context.Context, qname, zone string) (string, dns.Typ
 	case "CNAME":
 		t = dns.Type(dns.TypeCNAME)
 		v = v + "." + zone
+	case "TXT":
+		t = dns.Type(dns.TypeTXT)
+		v = v
+	default:
+		return "", t, fmt.Errorf("unsupported record type: %s", tp)
 	}
 
 	return v, t, nil
