@@ -8,6 +8,8 @@ import (
 	"go.etcd.io/etcd/client/v3/concurrency"
 )
 
+const prefix = "/election"
+
 type Election interface {
 	Campaign(context.Context, ...ElectionOption) error
 }
@@ -29,7 +31,7 @@ var (
 
 func WithElection(name string) ElectionOption {
 	return func(e *electionConfig) {
-		e.prefix = name
+		e.prefix = fmt.Sprintf("%s/%s", prefix, name)
 	}
 }
 
@@ -71,6 +73,7 @@ func (p Plugin) Campaign(ctx context.Context, setters ...ElectionOption) error {
 
 	// invoke leader callback since election was won
 	if cfg.cb != nil {
+		log.Debugf("election won, executing callback (key: %s)", e.Key())
 		if err := cfg.cb(ctx); err != nil {
 			return fmt.Errorf("error executing callback after winning election: %w", err)
 		}
