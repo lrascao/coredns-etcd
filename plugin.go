@@ -124,15 +124,15 @@ func (p Plugin) Name() string { return "etcd" }
 func (p Plugin) lookup(ctx context.Context, qname, zone string) (string, dns.Type, error) {
 	var t dns.Type
 
+	// lowercase the qname
+	qname = strings.ToLower(qname)
+
 	name := strings.TrimSuffix(
 		strings.TrimSuffix(qname, zone), ".")
 
 	fullname := p.prefix + p.separator +
 		strings.TrimSuffix(zone, ".") + p.separator +
 		name + p.separator
-
-	// lowercase the whole thing
-	fullname = strings.ToLower(fullname)
 
 	kvc := etcd.NewKV(p.client)
 
