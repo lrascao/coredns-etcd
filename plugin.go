@@ -124,19 +124,24 @@ func (p Plugin) Name() string { return "etcd" }
 func (p Plugin) lookup(ctx context.Context, qname, zone string) (string, dns.Type, error) {
 	var t dns.Type
 
-	name := p.prefix + p.separator +
+	name := strings.TrimSuffix(
+		strings.TrimSuffix(qname, zone), ".")
+
+	fullname := p.prefix + p.separator +
 		strings.TrimSuffix(zone, ".") + p.separator +
-		strings.TrimSuffix(strings.TrimSuffix(qname, zone), ".") +
-		p.separator
+		name + p.separator
+
+	// lowercase the whole thing
+	fullname = strings.ToLower(fullname)
 
 	kvc := etcd.NewKV(p.client)
 
-	res, err := kvc.Get(ctx, name, etcd.WithPrefix())
+	res, err := kvc.Get(ctx, fullname, etcd.WithPrefix())
 	if err != nil {
 		return "", t, errors.Wrap(err, "could not get DNS name")
 	}
 
-	log.Infof("name: %s, # results: %v", name, len(res.Kvs))
+	log.Infof("full name: %s, # results: %v", fullname, len(res.Kvs))
 
 	// we're expecting only one result
 	if len(res.Kvs) != 1 {
@@ -145,8 +150,8 @@ func (p Plugin) lookup(ctx context.Context, qname, zone string) (string, dns.Typ
 
 	k := string(res.Kvs[0].Key)
 	v := string(res.Kvs[0].Value)
-	tp := strings.TrimPrefix(k, name)
-	log.Infof("%s (@ %s), key %s: %v (type %s)", qname, name, k, v, tp)
+	tp := strings.TrimPrefix(k, fullname)
+	log.Infof("%s (@ %s), key %s: %v (type %s)", qname, fullname, k, v, tp)
 
 	switch tp {
 	case "A":
