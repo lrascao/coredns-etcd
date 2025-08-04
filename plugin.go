@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"strings"
+	"sync"
 
 	"github.com/coredns/coredns/plugin"
 	"github.com/coredns/coredns/request"
@@ -23,6 +24,7 @@ type Plugin struct {
 	prefix    string
 	separator string
 	client    *etcd.Client
+	mu        sync.Mutex
 }
 
 // ServeDNS implements the plugin.Handler interface. This method gets called when etcd plugin is used

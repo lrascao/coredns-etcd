@@ -5,6 +5,7 @@ go 1.24.4
 require (
 	github.com/coredns/caddy v1.1.2-0.20241029205200-8de985351a98
 	github.com/coredns/coredns v1.12.2
+	github.com/libdns/libdns v1.1.0
 	github.com/miekg/dns v1.1.66
 	github.com/pkg/errors v0.9.1
 	go.etcd.io/etcd/client/v3 v3.6.4
