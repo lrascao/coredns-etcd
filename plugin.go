@@ -24,7 +24,10 @@ type Plugin struct {
 	prefix    string
 	separator string
 	client    *etcd.Client
-	mu        sync.Mutex
+	// Guards record writes. A pointer because every method here takes Plugin
+	// by value, and a sync.Mutex field would be copied along with it, leaving
+	// each call locking its own private copy and excluding nothing.
+	mu *sync.Mutex
 }
 
 // ServeDNS implements the plugin.Handler interface. This method gets called when etcd plugin is used
@@ -121,6 +124,11 @@ func (p Plugin) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.Msg) 
 // Name implements the Handler interface.
 func (p Plugin) Name() string { return "etcd" }
 
+// Client exposes the underlying etcd client so that other plugins in the same
+// server block can reuse this connection rather than opening a second one and
+// duplicating its endpoint and TLS configuration.
+func (p Plugin) Client() *etcd.Client { return p.client }
+
 func (p Plugin) lookup(ctx context.Context, qname, zone string) (string, dns.Type, error) {
 	var t dns.Type
 
@@ -161,7 +169,6 @@ func (p Plugin) lookup(ctx context.Context, qname, zone string) (string, dns.Typ
 		v = v + "." + zone
 	case "TXT":
 		t = dns.Type(dns.TypeTXT)
-		v = v
 	default:
 		return "", t, fmt.Errorf("unsupported record type: %s", tp)
 	}

@@ -3,6 +3,7 @@ package etcd
 import (
 	"context"
 	"fmt"
+	"sync"
 
 	"github.com/coredns/caddy"
 	"github.com/coredns/coredns/core/dnsserver"
@@ -77,6 +78,10 @@ func setup(c *caddy.Controller) error {
 		return fmt.Errorf("unable to create etcd client: %w", err)
 	}
 
+	// Shared by every Plugin value built below, so that they all serialize
+	// record writes against one another rather than each against itself.
+	mu := new(sync.Mutex)
+
 	// Add the Plugin to CoreDNS, so Servers can use it in their plugin chain.
 	cfg := dnsserver.GetConfig(c)
 	cfg.AddPlugin(
@@ -87,6 +92,7 @@ func setup(c *caddy.Controller) error {
 				prefix:    prefix,
 				separator: separator,
 				client:    client,
+				mu:        mu,
 			}
 		})
 
