@@ -8,8 +8,6 @@ import (
 	"go.etcd.io/etcd/client/v3/concurrency"
 )
 
-const prefix = "/election"
-
 type Election interface {
 	Campaign(context.Context, ...ElectionOption) error
 }
@@ -29,9 +27,13 @@ var (
 	ErrProposalNotSet = errors.New("election proposal must be set")
 )
 
-func WithElection(name string) ElectionOption {
+// WithElection sets the etcd key the election is held under. The key is used
+// as given: callers own their own keyspace, so that election state can sit
+// alongside whatever else they keep in etcd rather than in a namespace this
+// package picks for them.
+func WithElection(key string) ElectionOption {
 	return func(e *electionConfig) {
-		e.prefix = fmt.Sprintf("%s/%s", prefix, name)
+		e.prefix = key
 	}
 }
 

@@ -9,9 +9,9 @@ import (
 func TestElectionOptions(t *testing.T) {
 	var cfg electionConfig
 
-	// Election names are namespaced, they are not used as the etcd key as given.
-	WithElection("acme-dns01")(&cfg)
-	if want := "/election/acme-dns01"; cfg.prefix != want {
+	// The key is used exactly as given, the caller owns its placement.
+	WithElection("/coredns/acme/election/acme-dns01")(&cfg)
+	if want := "/coredns/acme/election/acme-dns01"; cfg.prefix != want {
 		t.Errorf("prefix = %q, want %q", cfg.prefix, want)
 	}
 
@@ -48,26 +48,19 @@ func TestElectionOptionsLastWins(t *testing.T) {
 		setter(&cfg)
 	}
 
-	if want := "/election/second"; cfg.prefix != want {
+	if want := "second"; cfg.prefix != want {
 		t.Errorf("prefix = %q, want %q", cfg.prefix, want)
 	}
 }
 
-// WithElection always produces a non-empty prefix, so an empty election name
-// yields the bare namespace and slips past the ErrPrefixNotSet check that is
-// meant to catch a caller who never set one. Recorded rather than fixed, since
-// tightening it would change behaviour for existing callers.
-func TestWithElectionAlwaysProducesANonEmptyPrefix(t *testing.T) {
-	var cfg electionConfig
-	WithElection("")(&cfg)
+// Now that the key is taken verbatim, an empty one is indistinguishable from
+// never having called WithElection, and Campaign rejects both.
+func TestCampaignRejectsAnEmptyElectionKey(t *testing.T) {
+	err := Plugin{}.Campaign(context.Background(),
+		WithElection(""), WithProposal("node1"))
 
-	if cfg.prefix != "/election/" {
-		t.Fatalf("prefix = %q, want %q", cfg.prefix, "/election/")
-	}
-	// Which is what makes it invisible to Campaign's guard: that only fires
-	// when WithElection was never called at all.
-	if cfg.prefix == "" {
-		t.Error("expected the bare namespace to be non-empty")
+	if !errors.Is(err, ErrPrefixNotSet) {
+		t.Errorf("Campaign() error = %v, want %v", err, ErrPrefixNotSet)
 	}
 }
 
