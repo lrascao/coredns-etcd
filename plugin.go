@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"sort"
 	"strings"
 	"sync"
 
@@ -49,7 +50,7 @@ func (p Plugin) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.Msg) 
 	m.SetReply(r)
 	m.Authoritative, m.RecursionAvailable, m.Compress = true, true, true
 
-	rname, t, err := p.lookup(ctx, qname, zone)
+	rnames, t, err := p.lookup(ctx, qname, zone)
 	if err != nil {
 		return plugin.NextOrFailure(p.Name(), p.Next, ctx, w, r)
 	}
@@ -64,11 +65,11 @@ func (p Plugin) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.Msg) 
 					Class:  dns.ClassINET,
 					Rrtype: dns.TypeA,
 				},
-				A: net.ParseIP(rname).To4(),
+				A: net.ParseIP(rnames[0]).To4(),
 			},
 		}
 	case dns.Type(dns.TypeCNAME):
-		rrname, _, err := p.lookup(ctx, rname, zone)
+		rrnames, _, err := p.lookup(ctx, rnames[0], zone)
 		if err != nil {
 			return dns.RcodeServerFailure, errors.Wrap(err, "unable to lookup name on etcd")
 		}
@@ -81,29 +82,34 @@ func (p Plugin) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.Msg) 
 					Class:  dns.ClassINET,
 					Rrtype: dns.TypeCNAME,
 				},
-				Target: rname,
+				Target: rnames[0],
 			},
 			&dns.A{
 				Hdr: dns.RR_Header{
-					Name:   rname,
+					Name:   rnames[0],
 					Ttl:    ttl,
 					Class:  dns.ClassINET,
 					Rrtype: dns.TypeA,
 				},
-				A: net.ParseIP(rrname).To4(),
+				A: net.ParseIP(rrnames[0]).To4(),
 			},
 		}
 	case dns.Type(dns.TypeTXT):
-		m.Answer = []dns.RR{
-			&dns.TXT{
-				Hdr: dns.RR_Header{
-					Name:   qname,
-					Ttl:    ttl,
-					Class:  dns.ClassINET,
-					Rrtype: dns.TypeTXT,
-				},
-				Txt: []string{rname},
-			},
+		// One RR per value rather than a single RR holding several strings: a
+		// resolver concatenates the strings within one TXT record, which would
+		// corrupt an ACME challenge value.
+		m.Answer = make([]dns.RR, 0, len(rnames))
+		for _, v := range rnames {
+			m.Answer = append(m.Answer,
+				&dns.TXT{
+					Hdr: dns.RR_Header{
+						Name:   qname,
+						Ttl:    ttl,
+						Class:  dns.ClassINET,
+						Rrtype: dns.TypeTXT,
+					},
+					Txt: []string{v},
+				})
 		}
 	default:
 		return dns.RcodeNotImplemented, fmt.Errorf("unsupported query type: %v", req.QType())
@@ -129,7 +135,20 @@ func (p Plugin) Name() string { return "etcd" }
 // duplicating its endpoint and TLS configuration.
 func (p Plugin) Client() *etcd.Client { return p.client }
 
-func (p Plugin) lookup(ctx context.Context, qname, zone string) (string, dns.Type, error) {
+// recordType extracts the record type from what follows a name's key prefix.
+// A and CNAME keys end at the type, so the remainder is the type itself. TXT
+// keys carry a further per-value segment, so that one name can hold several of
+// them, and the type is what precedes it.
+func recordType(rest, separator string) string {
+	tp, _, _ := strings.Cut(rest, separator)
+	return tp
+}
+
+// lookup returns every value stored for qname, along with their shared record
+// type. Only TXT ever yields more than one, which an ACME DNS-01 challenge for
+// a domain and its wildcard requires: both authorizations are validated at the
+// same _acme-challenge name and must be present at once.
+func (p Plugin) lookup(ctx context.Context, qname, zone string) ([]string, dns.Type, error) {
 	var t dns.Type
 
 	// lowercase the qname
@@ -146,34 +165,81 @@ func (p Plugin) lookup(ctx context.Context, qname, zone string) (string, dns.Typ
 
 	res, err := kvc.Get(ctx, fullname, etcd.WithPrefix())
 	if err != nil {
-		return "", t, errors.Wrap(err, "could not get DNS name")
+		return nil, t, errors.Wrap(err, "could not get DNS name")
 	}
 
 	log.Infof("full name: %s, # results: %v", fullname, len(res.Kvs))
 
-	// we're expecting only one result
-	if len(res.Kvs) != 1 {
-		return "", t, errors.New("unexpected number of records")
+	records := make([]record, 0, len(res.Kvs))
+	for _, kv := range res.Kvs {
+		k := string(kv.Key)
+		v := string(kv.Value)
+
+		log.Infof("%s (@ %s), key %s: %v", qname, fullname, k, v)
+
+		records = append(records, record{key: k, value: v})
 	}
 
-	k := string(res.Kvs[0].Key)
-	v := string(res.Kvs[0].Value)
-	tp := strings.TrimPrefix(k, fullname)
-	log.Infof("%s (@ %s), key %s: %v (type %s)", qname, fullname, k, v, tp)
+	return selectRecords(records, fullname, p.separator, zone)
+}
+
+// record is a single key/value as stored in etcd.
+type record struct {
+	key   string
+	value string
+}
+
+// selectRecords reduces the keys found under a name to the values to answer
+// with and the type they share. It is separate from the etcd round trip purely
+// so that it can be exercised directly, this being the path that serves every
+// query the plugin handles.
+func selectRecords(records []record, fullname, separator, zone string) ([]string, dns.Type, error) {
+	var t dns.Type
+
+	if len(records) == 0 {
+		return nil, t, errors.New("unexpected number of records")
+	}
+
+	// Group by type, a name is still expected to hold exactly one of them.
+	byType := make(map[string][]string, 1)
+	for _, r := range records {
+		tp := recordType(strings.TrimPrefix(r.key, fullname), separator)
+		byType[tp] = append(byType[tp], r.value)
+	}
+	if len(byType) != 1 {
+		return nil, t, errors.New("unexpected number of records")
+	}
+
+	var tp string
+	var values []string
+	for k, v := range byType {
+		tp, values = k, v
+	}
+
+	// Keep answers stable across queries, map iteration is not ordered.
+	sort.Strings(values)
 
 	switch tp {
 	case "A":
 		t = dns.Type(dns.TypeA)
 	case "CNAME":
 		t = dns.Type(dns.TypeCNAME)
-		v = v + "." + zone
+		for i := range values {
+			values[i] = values[i] + "." + zone
+		}
 	case "TXT":
 		t = dns.Type(dns.TypeTXT)
 	default:
-		return "", t, fmt.Errorf("unsupported record type: %s", tp)
+		return nil, t, fmt.Errorf("unsupported record type: %s", tp)
 	}
 
-	return v, t, nil
+	// A and CNAME are single valued, more than one is a broken zone rather
+	// than something to answer with.
+	if t != dns.Type(dns.TypeTXT) && len(values) != 1 {
+		return nil, t, errors.New("unexpected number of records")
+	}
+
+	return values, t, nil
 }
 
 // ResponsePrinter wrap a dns.ResponseWriter and will write example to standard output when WriteMsg is called.

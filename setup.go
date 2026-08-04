@@ -22,58 +22,80 @@ func init() {
 
 // setup is the function that gets called when the config parser see the token "example". Setup is responsible
 // for parsing any extra options the example plugin may have. The first token this function sees is "example".
-func setup(c *caddy.Controller) error {
+// config is everything the etcd block carries.
+type config struct {
+	endpoints []string
+	caFile    string
+	certFile  string
+	keyFile   string
+	prefix    string
+	separator string
+}
+
+// parseConfig reads the etcd block. Kept apart from setup so that it can be
+// tested without opening a connection.
+func parseConfig(c *caddy.Controller) (config, error) {
+	var cfg config
+
 	c.Next() // Ignore "etcd" and give us the next token.
 
 	if !c.NextBlock() { // Expects a block
-		return fmt.Errorf("no block found: %w", c.ArgErr()) // Otherwise it's an error.
+		return config{}, fmt.Errorf("no block found: %w", c.ArgErr()) // Otherwise it's an error.
 	}
 
-	var (
-		endpoints                 []string
-		caFile, certFile, keyFile string
-		prefix                    string
-		separator                 string
-	)
 	for {
 		value := c.Val() // Use the value.
 		switch value {
 		case "endpoints":
 			for c.NextArg() {
-				endpoints = append(endpoints, c.Val())
+				cfg.endpoints = append(cfg.endpoints, c.Val())
 			}
 		case "ca":
 			if !c.NextArg() {
-				return c.ArgErr()
+				return config{}, c.ArgErr()
 			}
-			caFile = c.Val()
+			cfg.caFile = c.Val()
 		case "cert":
 			if !c.NextArg() {
-				return c.ArgErr()
+				return config{}, c.ArgErr()
 			}
-			certFile = c.Val()
+			cfg.certFile = c.Val()
 		case "key":
 			if !c.NextArg() {
-				return c.ArgErr()
+				return config{}, c.ArgErr()
 			}
-			keyFile = c.Val()
+			cfg.keyFile = c.Val()
 		case "prefix":
 			if !c.NextArg() {
-				return c.ArgErr()
+				return config{}, c.ArgErr()
 			}
-			prefix = c.Val()
+			cfg.prefix = c.Val()
 		case "separator":
 			if !c.NextArg() {
-				return c.ArgErr()
+				return config{}, c.ArgErr()
 			}
-			separator = c.Val()
+			cfg.separator = c.Val()
 		}
 		if !c.Next() {
 			break
 		}
 	}
 
-	client, err := NewClient(context.Background(), endpoints, caFile, certFile, keyFile)
+	return cfg, nil
+}
+
+// setup is the function that gets called when the config parser see the token "example". Setup is responsible
+// for parsing any extra options the example plugin may have. The first token this function sees is "example".
+func setup(c *caddy.Controller) error {
+	conf, err := parseConfig(c)
+	if err != nil {
+		return err
+	}
+
+	prefix, separator := conf.prefix, conf.separator
+
+	client, err := NewClient(context.Background(),
+		conf.endpoints, conf.caFile, conf.certFile, conf.keyFile)
 	if err != nil {
 		return fmt.Errorf("unable to create etcd client: %w", err)
 	}

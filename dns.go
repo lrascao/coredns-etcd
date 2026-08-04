@@ -2,6 +2,8 @@ package etcd
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"strings"
 
@@ -61,14 +63,43 @@ func (p Plugin) DeleteRecords(ctx context.Context, zone string, recs []libdns.Re
 		if _, err := p.client.KV.Delete(ctx, p.fullName(zone, rec)); err != nil {
 			return nil, fmt.Errorf("error deleting record from etcd: %w", err)
 		}
+
+		deleted = append(deleted, rec)
 	}
 
 	return deleted, nil
 }
 
+// fullName is the etcd key a record is stored under.
+//
+// TXT records get a further segment derived from the value, so that one name
+// can hold several of them. An ACME DNS-01 challenge for both a domain and its
+// wildcard needs exactly that: the two authorizations are validated at the same
+// _acme-challenge name, with different values that have to be present at once.
+// Keying on the value rather than an index also makes appending idempotent,
+// re-presenting the same value overwrites its own key instead of accumulating
+// duplicates.
+//
+// Every other type keeps a single key per name, so their layout is unchanged.
 func (p Plugin) fullName(zone string, rec libdns.Record) string {
-	return p.prefix + p.separator +
+	rr := rec.RR()
+
+	key := p.prefix + p.separator +
 		strings.TrimSuffix(zone, ".") + p.separator +
-		rec.RR().Name + p.separator +
-		rec.RR().Type
+		rr.Name + p.separator +
+		rr.Type
+
+	if rr.Type == "TXT" {
+		key += p.separator + valueKey(rr.Data)
+	}
+
+	return key
+}
+
+// valueKey derives a short, stable key segment from a record's value. Hashing
+// rather than using the value directly keeps arbitrary content, which may hold
+// spaces or the configured separator, from breaking the key layout.
+func valueKey(value string) string {
+	sum := sha256.Sum256([]byte(value))
+	return hex.EncodeToString(sum[:8])
 }
